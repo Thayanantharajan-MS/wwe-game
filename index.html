@@ -5,18 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ring Clash Online</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <!--
-=====================  FIREBASE SETUP (read me)  =====================
-1. https://console.firebase.google.com -> Add project.
-2. Build > Authentication > Sign-in method > enable "Anonymous".
-3. Build > Realtime Database > Create database (any region, test mode to start).
-4. Project settings > Your apps > Web app (</>) > copy the config object and paste it
-   over the YOUR_FIREBASE_CONFIG block in the script below (include databaseURL!).
-5. Suggested Realtime Database rules (signed-in users only):
-   { "rules": { "rooms": { ".read": "auth != null", ".write": "auth != null" } } }
-6. Serve this file over http(s) (e.g. `npx serve`, Firebase Hosting) and open it in two
-   browser windows/devices. Player 1 creates a room, Player 2 joins with the 6-digit code.
-=======================================================================
+=====================  GITHUB PAGES SETUP  =====================
+No Firebase and no server needed: players connect directly (WebRTC) using PeerJS's free public broker.
+1. Create a GitHub repo and upload this file as `index.html`.
+2. Settings > Pages > Deploy from a branch > main / (root) > Save.
+3. Open https://<user>.github.io/<repo>/ in two browsers/devices.
+   Player 1 clicks "Create room" and shares the 6-digit code; Player 2 enters it and clicks "Join room".
+Note: a few strict school/office networks block WebRTC; if two players cannot connect, try another network.
+=================================================================
 -->
 <style>
 :root{--bg:#07070c;--panel:#12121c;--gold:#f2b705;--red:#e0143c;--blue:#1e6bff;--text:#f3efe6}
@@ -52,8 +50,8 @@ canvas{width:100%;max-width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;displa
 #pad button{width:100%;height:62px;border-radius:50%;font-size:13px;padding:0;background:#12121ccc;border:2px solid var(--gold);touch-action:none;user-select:none;-webkit-user-select:none}
 #pad button.on{background:var(--red)}
 @media (hover:hover) and (pointer:fine){#pad{display:none!important}}
-.chars{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
-.chars button{font-size:16px;padding:8px 2px;background:#22222f;border:2px solid transparent}
+.chars{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.chars button{font-size:14px;padding:8px 2px;background:#22222f;border:2px solid transparent}
 .chars button.sel{border-color:var(--gold);background:#3a1620}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -97,22 +95,7 @@ canvas{width:100%;max-width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;displa
 </div>
 
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getDatabase, ref, set, get, update, remove, onValue, onDisconnect, runTransaction }
-  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-
-/* ============ 1. FIREBASE CONFIG — replace with YOUR_FIREBASE_CONFIG ============ */
-const firebaseConfig = {
-  apiKey: "AIzaSyAi3XkbwiGa4A3LWuAu0_hdVqFiuibrpLI",
-  authDomain: "wwe-game-b0796.firebaseapp.com",
-  projectId: "wwe-game-b0796",
-  storageBucket: "wwe-game-b0796.firebasestorage.app",
-  messagingSenderId: "1083326357000",
-  appId: "1:1083326357000:web:a6f9de3b92d8ea2f7c7bbd",
-  measurementId: "G-1D3E4SBTDZ"
-};
-let db, auth;
+/* ============ 1. NETWORK: PeerJS (WebRTC) — see section 5 ============ */
 
 /* ============ 2. DOM HELPERS ============ */
 const $ = id => document.getElementById(id);
@@ -132,12 +115,14 @@ const ATK = {
   special: { dur:1.0, s:.40, e:.50, reach:105, dmg:30, kb:560, names:['RKO!','ROCK BOTTOM!','CHOKESLAM!'] }
 };
 const COLORS = { 1:'#e0143c', 2:'#1e6bff' };
-// Original wrestler archetypes (build = body scale, spd = walk speed, pow = damage multiplier).
+// Original wrestler archetypes (not real people). build=body scale, spd=walk speed, pow=damage multiplier, fin=finisher name.
 const CHARS = [
-  { name:'TITAN',  skin:'#b9774a', dark:'#9a5f3a', hair:'bald',   build:1.14, spd:225, pow:1.2 },
-  { name:'VIPER',  skin:'#e3b08a', dark:'#c4906b', hair:'long',   build:.96,  spd:295, pow:.92 },
-  { name:'ROCKET', skin:'#8d5a3b', dark:'#734629', hair:'mohawk', build:1,    spd:265, pow:1 },
-  { name:'BARON',  skin:'#f0c8a0', dark:'#d1a67f', hair:'beard',  build:1.06, spd:245, pow:1.1 }
+  { name:'BRAWLER',     fin:'SPINEBUSTER', skin:'#c68a62', dark:'#a86f4b', hair:'short', hairc:'#1b1410', beard:'#2a1d14', top:'#151515', pants:'#2f4f7a', pantsD:'#243c5e', boots:'#111', belt:'#6b4a2a', build:1.08, spd:255, pow:1.1 },
+  { name:'SHOWSTOPPER', fin:'DDT',         skin:'#8d5a3b', dark:'#734629', hair:'short', hairc:'#0d0a08', boots:'#111', pads:'#111', belt:'#f2b705', build:1.12, spd:245, pow:1.12 },
+  { name:'MIDNIGHT',    fin:'CHOKESLAM',   skin:'#b98d72', dark:'#9a735b', hair:'long', hairc:'#0d0d12', top:'#2a1a44', pants:'#1a1226', pantsD:'#120c1a', boots:'#0a0a0a', gloves:'#0a0a0a', belt:'#555', build:1.16, spd:225, pow:1.2 },
+  { name:'TECHNICIAN',  fin:'SUPERKICK',   skin:'#e8bd98', dark:'#c99c77', hair:'short', hairc:'#d8b35a', boots:'#eee', pads:'#eee', belt:'#222', build:.97, spd:300, pow:.92 },
+  { name:'POWERHOUSE',  fin:'POWERBOMB',   skin:'#9b6a4a', dark:'#7d543a', mask:'#20202a', hair:'bald', boots:'#222', gloves:'#222', belt:'#f2b705', build:1.2, spd:215, pow:1.25 },
+  { name:'SHOWMAN',     fin:'BIG BOOT',    skin:'#e0a77d', dark:'#c18963', hair:'long', hairc:'#e8c455', beard:'#d5ad45', boots:'#d4a017', pads:'#d4a017', belt:'#f2b705', build:1.14, spd:235, pow:1.15 }
 ];
 let myChar = 0, cam = { x:480, z:1 }, parts = [], freeze = 0, declared = false;
 const burst = (x, y, k) => { for (let i = 0; i < k; i++) parts.push({ x, y, vx:(Math.random()-.5)*520, vy:-Math.random()*420, l:.5+Math.random()*.3, c: Math.random()<.5 ? '#f2b705' : '#fff' }); };
@@ -153,34 +138,30 @@ const announce = (text, t = 1.4) => { ann = { text, t }; };
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const hurtH = f => f.state === 'block' ? 70 : (f.state === 'down' ? 30 : 104);
 
-/* ============ 5. ROOM MANAGEMENT ============ */
-async function boot() {
-  if (db) return true;
-  if (firebaseConfig.apiKey === "YOUR_FIREBASE_CONFIG") { setMsg('Add your Firebase config first (see comments at top of file).'); return false; }
-  try {
-    const app = initializeApp(firebaseConfig);
-    auth = getAuth(app); db = getDatabase(app);
-    await signInAnonymously(auth);
-    return true;
-  } catch (e) { setMsg('Firebase error: ' + e.message); db = null; return false; }
-}
-const R = p => ref(db, `rooms/${code}${p ? '/' + p : ''}`);
+/* ============ 5. ROOM MANAGEMENT (PeerJS / WebRTC, works on GitHub Pages) ============ */
+// Room code = PeerJS id "ringclash-<code>". The host registers it; the guest connects to it.
+// Every room is its own private 2-peer link, so any number of rooms run concurrently.
+let peer = null, conn = null, oppRM = false;
+const send = m => { try { if (conn && conn.open) conn.send(m); } catch (e) {} };
+const makePeer = id => new Promise((res, rej) => { const p = id ? new Peer(id) : new Peer(); p.on('open', () => res(p)); p.on('error', rej); });
+function closeNet() { try { conn && conn.close(); } catch (e) {} try { peer && peer.destroy(); } catch (e) {} conn = peer = null; }
 
 async function createRoom() {
   setMsg(''); $('btnCreate').disabled = true;
   try {
-    if (!await boot()) return;
-    for (let i = 0; i < 5; i++) {                       // retry on the rare code collision
-      const c = String(Math.floor(100000 + Math.random() * 900000));
-      const snap = await get(ref(db, `rooms/${c}`));
-      if (snap.exists()) continue;
-      code = c; n = 1; opn = 2;
-      await set(R(), { host: auth.currentUser.uid, round: 0, status: 'waiting', created: Date.now() });
-      onDisconnect(R()).remove();                       // host vanishes while waiting -> room deleted
-      enterRoom(); return;
+    let c = null;
+    for (let i = 0; i < 5 && !c; i++) {                    // retry on code collision
+      const t = String(Math.floor(100000 + Math.random() * 900000));
+      try { peer = await makePeer('ringclash-' + t); c = t; } catch (e) { if (e.type !== 'unavailable-id') throw e; }
     }
-    setMsg('Could not create a room. Try again.');
-  } catch (e) { setMsg('Error: ' + e.message); }
+    if (!c) return setMsg('Could not create a room. Try again.');
+    code = c; n = 1; opn = 2;
+    peer.on('connection', cn => {
+      if (conn) { cn.on('open', () => { cn.send({ t: 'full' }); setTimeout(() => cn.close(), 300); }); return; }   // room holds 2 players
+      conn = cn; wire();
+    });
+    enterRoom();
+  } catch (e) { setMsg('Network error (' + (e.type || e.message) + ').'); closeNet(); }
   finally { $('btnCreate').disabled = false; }
 }
 
@@ -189,102 +170,79 @@ async function joinRoom() {
   if (!/^\d{6}$/.test(c)) return setMsg('Enter a 6-digit room code.');
   setMsg(''); $('btnJoin').disabled = true;
   try {
-    if (!await boot()) return;
-    const snap = await get(ref(db, `rooms/${c}`));
-    if (!snap.exists()) return setMsg('Room not found.');
-    // Transaction guarantees only ONE guest can take the seat even if two people race.
-    const res = await runTransaction(ref(db, `rooms/${c}/guest`), cur => cur === null ? auth.currentUser.uid : undefined);
-    if (!res.committed) return setMsg('Room is already full.');
+    peer = await makePeer();
+    conn = peer.connect('ringclash-' + c, { reliable: true });
+    await new Promise((res, rej) => { conn.on('open', res); peer.on('error', rej); setTimeout(() => rej({ type: 'timeout' }), 9000); });
     code = c; n = 2; opn = 1;
-    enterRoom();
-  } catch (e) { setMsg('Error: ' + e.message); }
+    enterRoom(); wire();
+  } catch (e) { setMsg(e.type === 'peer-unavailable' || e.type === 'timeout' ? 'Room not found.' : 'Network error (' + (e.type || e.message) + ').'); closeNet(); }
   finally { $('btnJoin').disabled = false; }
 }
 
 function enterRoom() {
-  started = false; lastHitId = null; over = false; rematchSent = false;
-  $('code').textContent = code; $('lobbyTxt').textContent = n === 1 ? 'Waiting for Player 2 to join…' : 'Joined! Waiting for host…';
-  show('lobby');
-  me = newFighter(n); opp = newOpp(opn);
-  const pres = R('presence/' + n);
-  set(pres, true); onDisconnect(pres).remove();
-  if (n === 2) onDisconnect(R('guest')).remove();      // free the seat if the guest drops in the lobby
-
-  // Presence: start when both are in; detect the other player leaving.
-  unsubs.push(onValue(R('presence'), s => {
-    const v = s.val() || [];                            // object keyed by slot
-    const both = v[1] && v[2];
-    if (both && n === 1 && !started) {                  // host kicks off round 1
-      onDisconnect(R()).cancel();
-      update(R(), { status: 'playing', round: 1, winner: null });
-    }
-    if (started && !v[opn]) opponentLeft();
-  }));
-  // Round counter: every new value (re)starts a fight, used for rematches too.
-  unsubs.push(onValue(R('round'), s => { if (s.val() >= 1) startFight(); }));
-  unsubs.push(onValue(R('winner'), s => { if (s.exists() && s.val() !== null && !over) endGame(s.val()); }));
-  unsubs.push(onValue(R('hit/' + n), s => { const h = s.val(); if (h && h.id !== lastHitId) { lastHitId = h.id; applyHit(h); } }));
-  unsubs.push(onValue(R('p/' + opn), s => receiveOpp(s.val())));
-  if (n === 1) unsubs.push(onValue(R('rematch'), s => {   // host resets once both players agree
-    const v = s.val(); if (code && v && v[1] && v[2]) get(R('round')).then(r => update(R(), { winner: null, rematch: null, round: (r.val() || 1) + 1 }));
-  }));
+  started = false; over = false; rematchSent = false; oppRM = false;
+  $('code').textContent = code; $('lobbyTxt').textContent = n === 1 ? 'Share this code, then wait for Player 2…' : 'Connected! Starting…';
+  show('lobby'); me = newFighter(n); opp = newOpp(opn);
 }
 
-function opponentLeft() {
-  if (!started) return; started = false;
-  over = true; $('over').classList.add('on'); $('overTxt').textContent = 'OPPONENT LEFT';
-  $('btnRematch').style.display = 'none';
-  remove(R()).catch(() => {});                          // clean up room state
+function wire() {
+  conn.on('data', onData); conn.on('close', opponentGone); conn.on('error', opponentGone);
+  if (n === 1) { const go = () => { send({ t: 'go' }); startFight(); }; conn.open ? go() : conn.on('open', go); }   // host starts the match
+}
+function onData(m) {
+  if (!m || !code) return;
+  if (m.t === 's') receiveOpp(m);
+  else if (m.t === 'hit') applyHit(m);
+  else if (m.t === 'win') { if (!over) endGame(m.w); }
+  else if (m.t === 'rm') { oppRM = true; tryRematch(); }
+  else if (m.t === 'go') startFight();
+  else if (m.t === 'full') { setMsg('Room is already full.'); leaveRoom(); }
+}
+function tryRematch() { if (n === 1 && oppRM && rematchSent) { send({ t: 'go' }); startFight(); } }   // host restarts once both agreed
+
+function opponentGone() {
+  if (!code) return; conn = null;
+  if (started || over) { started = false; over = true; $('over').classList.add('on'); $('overTxt').textContent = 'OPPONENT LEFT'; $('btnRematch').style.display = 'none'; }
+  else if (n === 1) $('lobbyTxt').textContent = 'Player 2 left. Waiting for someone to join…';
+  else { setMsg('The host left the room.'); leaveRoom(); }
 }
 
 function leaveRoom() {
-  unsubs.forEach(u => u()); unsubs = [];
   clearInterval(sendTimer); cancelAnimationFrame(raf); sendTimer = null; raf = 0;
   window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp);
   Object.keys(keys).forEach(k => keys[k] = false);
-  if (db && code) {
-    // Drop my seat; whoever leaves last deletes the room (no orphaned rooms).
-    const c = code, slot = n, was = started, rr = ref(db, `rooms/${c}`), pr = ref(db, `rooms/${c}/presence/${slot}`);
-    onDisconnect(pr).cancel(); if (slot === 2) onDisconnect(ref(db, `rooms/${c}/guest`)).cancel();
-    remove(pr).then(() => get(ref(db, `rooms/${c}/presence`)))
-      .then(sn => sn.exists() ? (slot === 2 && !was ? update(rr, { guest: null }) : null) : remove(rr)).catch(() => {});
-  }
-  code = null; started = false; over = false;
-  $('over').classList.remove('on'); $('btnRematch').style.display = '';
-  show('menu');
+  const c = conn, p = peer; code = null; conn = peer = null; started = false; over = false;   // null first so close handlers ignore this
+  try { c && c.close(); } catch (e) {} try { p && p.destroy(); } catch (e) {}
+  $('over').classList.remove('on'); $('btnRematch').style.display = ''; show('menu');
 }
 
 /* ============ 6. FIGHT LIFECYCLE ============ */
 function startFight() {
   if (!code) return;
   me = newFighter(n); opp = newOpp(opn);
-  timeLeft = 99; over = false; rematchSent = false; started = true; declared = false; parts = []; freeze = 0;
+  timeLeft = 99; over = false; rematchSent = false; oppRM = false; started = true; declared = false; parts = []; freeze = 0;
   $('over').classList.remove('on'); $('btnRematch').disabled = false; $('btnRematch').textContent = 'Rematch';
-  announce('FIGHT!', 1.6); show('game'); if (document.activeElement) document.activeElement.blur();   // keep Space from re-clicking buttons
+  announce('FIGHT!', 1.6); show('game'); if (document.activeElement) document.activeElement.blur();
   window.addEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); window.addEventListener('keyup', onKeyUp);
-  clearInterval(sendTimer); sendTimer = setInterval(sendState, 33);   // ~30 Hz network tick
+  clearInterval(sendTimer); sendTimer = setInterval(sendState, 33);   // ~30 Hz
   sendState(); lastT = performance.now(); cancelAnimationFrame(raf); raf = requestAnimationFrame(loop);
 }
-
 function sendState() {
   if (!code || !started) return;
-  update(R('p/' + n), { x: Math.round(me.x), y: Math.round(me.y), f: me.face, a: me.state, hp: me.hp, m: Math.round(me.meter), pin: me.pin, c: me.ch })
-    .catch(() => {});
+  send({ t: 's', x: Math.round(me.x), y: Math.round(me.y), f: me.face, a: me.state, hp: me.hp, m: Math.round(me.meter), pin: me.pin, c: me.ch, b: me.big ? 1 : 0 });
 }
-
 function receiveOpp(v) {
-  if (!v || !opp) return;
-  opp.tx = v.x; opp.ty = v.y; opp.face = v.f; opp.hp = v.hp; opp.meter = v.m; if (v.c !== undefined) opp.ch = v.c;
+  if (!opp) return;
+  opp.tx = v.x; opp.ty = v.y; opp.face = v.f; opp.hp = v.hp; opp.meter = v.m; opp.big = !!v.b; if (v.c !== undefined) opp.ch = v.c;
   if (v.a !== opp.state) { opp.state = v.a; opp.t = 0; }
   if (v.pin !== opp.pin) { opp.pin = v.pin; if (v.pin > 0) announce(`PIN COUNT: ${[...Array(v.pin)].map((_, i) => i + 1).join('... ')}...`, 1.1); }
 }
-
 function endGame(w) {
   over = true;
   $('overTxt').textContent = w === 0 ? 'DRAW' : (w === n ? 'YOU WIN!' : 'YOU LOSE');
   $('over').classList.add('on');
 }
-const declareWinner = w => { if (over || declared) return; declared = true; update(R(), { winner: w, status: 'over' }).catch(() => { declared = false; }); };  // flag stops per-frame write spam
+const declareWinner = w => { if (over || declared) return; declared = true; send({ t: 'win', w }); endGame(w); };
 
 /* ============ 7. INPUT ============ */
 const BLOCKED = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'];
@@ -317,11 +275,10 @@ function checkHit(def) {
   if (opp.state === 'down') return;
   if (!overlap(hb, { x: opp.x - 24, y: opp.y - h, w: 48, h })) return;
   me.hitDone = true;
-  const name = pick(def.names);
+  const name = me.state === 'special' ? CHARS[me.ch].fin + '!' : pick(def.names);
   me.meter = Math.min(100, me.meter + def.dmg * 2);
   announce(name, 1); burst(opp.x, opp.y - 70, me.state === 'special' ? 28 : 10); freeze = me.state === 'special' ? .25 : .08;   // sparks + hit-stop
-  set(R('hit/' + opn), { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), dmg: Math.round(def.dmg * CHARS[me.ch].pow), kb: def.kb * me.face, fin: me.state === 'special', name })
-    .catch(() => {});
+  send({ t: 'hit', dmg: Math.round(def.dmg * CHARS[me.ch].pow), kb: def.kb * me.face, fin: me.state === 'special', name });
 }
 
 // Victim-authoritative: each client owns its own HP, so the two clients never disagree.
@@ -332,7 +289,7 @@ function applyHit(h) {
   me.hp = Math.max(0, me.hp - dmg);
   me.meter = Math.min(100, me.meter + dmg);
   me.vx = h.kb * (blocked ? .3 : 1);
-  if (!blocked) { me.state = 'hurt'; me.t = 0; me.stunDur = h.fin ? .7 : .3; me.vy = h.fin ? -300 : 0; }
+  if (!blocked) { me.state = 'hurt'; me.big = !!h.fin; me.t = 0; me.stunDur = h.fin ? .7 : .3; me.vy = h.fin ? -300 : 0; }
   if (h.fin) shake = .5; else shake = Math.max(shake, .1);
   burst(me.x, me.y - 70, h.fin ? 28 : 10); freeze = h.fin ? .25 : .08;
   announce(blocked ? 'BLOCKED!' : h.name, 1);
@@ -448,42 +405,53 @@ function limb(x, y, a, l, w, c) {
   ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(ex, ey); ctx.stroke(); return [ex, ey];
 }
 
-// Articulated wrestler: every state has its own pose (punch, kick, overhead smash, finisher...).
+// Articulated wrestler: 2-segment arms/legs (knees + elbows), fighting stance, weight shift, per-move poses.
+// Angles are degrees: 0 = forward, 90 = down, -90 = up.
 function drawFighter(f, slot) {
-  const ch = CHARS[f.ch || 0], sc = ch.build, team = COLORS[slot], now = performance.now();
-  const st = f.state, d = ATK[st], p = d ? Math.min(1, (f.t || 0) / d.dur) : 0, sw = Math.sin(p * Math.PI);
+  const ch = CHARS[f.ch || 0], sc = ch.build, team = COLORS[slot], now = performance.now(), ft = f.t || 0;
+  const st = f.state, d = ATK[st], p = d ? Math.min(1, ft / d.dur) : 0, sw = Math.sin(p * Math.PI), cl = v => Math.max(0, Math.min(1, v));
   const air = Math.max(0, GROUND - f.y);
   ctx.save(); ctx.translate(f.x, f.y);
-  ctx.fillStyle = `rgba(0,0,0,${Math.max(.08, .4 - air / 600)})`;           // shadow shrinks when airborne
-  ctx.beginPath(); ctx.ellipse(0, 2, Math.max(10, 36 * sc - air / 12), 8, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = `rgba(0,0,0,${Math.max(.08, .4 - air / 600)})`;
+  ctx.beginPath(); ctx.ellipse(0, 2, Math.max(10, 38 * sc - air / 12), 8, 0, 0, 7); ctx.fill();
   if (st === 'special') { const gl = ctx.createRadialGradient(0, -60, 5, 0, -60, 90); gl.addColorStop(0, '#f2b705aa'); gl.addColorStop(1, '#0000'); ctx.fillStyle = gl; ctx.fillRect(-100, -160, 200, 200); }
-  if (st === 'down') { ctx.translate(0, -12); ctx.rotate(-Math.PI / 2); }   // lying on the mat
+  if (st === 'down') { ctx.translate(0, -12); ctx.rotate(-Math.PI / 2); }
+  else if (st === 'hurt' && f.big) { const k = cl(ft / .3); ctx.translate(0, -50 * Math.sin(k * Math.PI)); ctx.rotate(-k * 80 * DEG * f.face); }   // finisher victims are thrown back
   ctx.scale(f.face * sc, sc);
-  let hip = -50, lean = 0, L1 = 92, L2 = 88, A1 = -45, A2 = -70, al = 36, ll = 50;
-  if (st === 'walk') { const w = Math.sin(now / 100) * 28; L1 = 90 + w; L2 = 90 - w; lean = 6; }
-  else if (st === 'jump') { L1 = 60; L2 = 115; A1 = -110; A2 = -80; }
-  else if (st === 'block') { hip = -38; L1 = 65; L2 = 112; A1 = -85; A2 = -100; lean = 10; }
-  else if (st === 'light') { A1 = -45 + sw * 45; al = 36 + sw * 20; lean = sw * 12; }
-  else if (st === 'kick') { L1 = 92 - sw * 85; ll = 50 + sw * 8; lean = -sw * 18; A1 = -100; A2 = -60; }
-  else if (st === 'heavy') { const k = Math.max(0, Math.min(1, (p - .35) / .3)); A1 = A2 = -165 + k * 205; lean = p < .35 ? -12 : 28; hip = -44; L1 = 70; L2 = 110; }
-  else if (st === 'special') { const k = Math.max(0, Math.min(1, (p - .4) / .2)); A1 = -125 + k * 125; A2 = -55 - k * 55; lean = k * 30 - (1 - k) * 8; hip = -50 - (1 - k) * sw * 30; al = 44; }
-  else if (st === 'hurt') { lean = -22; A1 = -135; A2 = -155; L1 = 100; L2 = 78; }
-  else if (st === 'down') { A1 = 70; A2 = 100; L1 = 95; L2 = 85; }
-  const sk = ch.skin, dk = ch.dark, ta = (-90 + lean) * DEG;
-  const sx = Math.cos(ta) * 42, sy = hip + Math.sin(ta) * 42 + Math.sin(now / 280) * 1.5;   // shoulder (idle breathing)
-  limb(0, hip, L2, ll, 15, dk); limb(sx, sy, A2, al, 12, dk);                // far leg + far arm
-  limb(0, hip, -90 + lean, 42, 30, sk);                                       // torso
-  limb(0, hip + 4, -90 + lean, 14, 32, team);                                 // trunks in team colour
-  const [kx, ky] = limb(0, hip, L1, ll, 16, sk);                              // near leg
-  ctx.fillStyle = team; ctx.beginPath(); ctx.arc(kx, ky, 8, 0, 7); ctx.fill(); // boot
-  const hx = sx + Math.cos(ta) * 16, hy = sy + Math.sin(ta) * 16;
-  if (ch.hair === 'long') { ctx.fillStyle = '#2a1a10'; ctx.fillRect(hx - 17, hy - 4, 14, 30); ctx.beginPath(); ctx.arc(hx - 1, hy - 3, 13, Math.PI, 2 * Math.PI); ctx.fill(); }
-  ctx.fillStyle = sk; ctx.beginPath(); ctx.arc(hx, hy, 13, 0, 7); ctx.fill();
-  if (ch.hair === 'mohawk') { ctx.fillStyle = '#ff7a00'; ctx.fillRect(hx - 3, hy - 23, 7, 12); }
-  if (ch.hair === 'beard') { ctx.fillStyle = '#3a2412'; ctx.beginPath(); ctx.arc(hx + 3, hy + 3, 11, 0, Math.PI); ctx.fill(); }
-  ctx.fillStyle = '#fff'; ctx.fillRect(hx + 4, hy - 3, 4, 3);                 // eye
-  const [fx, fy] = limb(sx, sy, A1, al, 14, sk);                              // near arm
-  ctx.fillStyle = sk; ctx.beginPath(); ctx.arc(fx, fy, 7, 0, 7); ctx.fill();   // fist
+  let hip = -48 + Math.sin(now / 320) * 1.5, lean = 4, F = [72, 100], B = [104, 82], AF = [55, -85], AB = [75, -105];
+  if (st === 'walk') { const w = Math.sin(now / 110) * 30; F = [72 + w, 100 + w * .6]; B = [104 - w, 82 - w * .6]; AF = [55 + w * .6, -85]; AB = [75 - w * .6, -105]; lean = 9; }
+  else if (st === 'jump') { F = [35, 105]; B = [60, 120]; AF = [-110, -60]; AB = [-70, -40]; lean = 0; }
+  else if (st === 'block') { hip = -34; F = [50, 110]; B = [115, 85]; AF = [25, -115]; AB = [35, -100]; lean = 14; }
+  else if (st === 'light') { AF = [55 - sw * 55, -85 + sw * 85]; F = [60, 95]; lean = sw * 14; }
+  else if (st === 'kick') { F = [72 - sw * 72, 100 - sw * 100]; B = [95, 85]; hip = -44; lean = -sw * 22; AF = [100, 60]; AB = [120, 80]; }
+  else if (st === 'heavy') { const k = cl((p - .35) / .3); AF = AB = [-165 + k * 215, -175 + k * 235]; lean = p < .35 ? -14 : 30; hip = -42; F = [60, 100]; B = [110, 85]; }
+  else if (st === 'special') { const k = cl((p - .4) / .2), w = 1 - k; AF = [-130 + k * 135, -140 + k * 140]; AB = [-60 - k * 60, -90]; lean = k * 32 - w * 10; hip = -48 - w * sw * 26; F = [60, 100]; B = [110, 85]; }
+  else if (st === 'hurt') { lean = -24; AF = [-140, -120]; AB = [-155, -110]; F = [100, 95]; B = [85, 70]; hip = -42; }
+  else if (st === 'down') { AF = [70, 70]; AB = [100, 100]; F = [92, 92]; B = [88, 88]; lean = 0; hip = -50; }
+  const sk = ch.skin, dk = ch.dark, ta = (-90 + lean) * DEG, sx = Math.cos(ta) * 44, sy = hip + Math.sin(ta) * 44;
+  const leg = (a, c) => {
+    const [kx, ky] = limb(0, hip, a[0], 26, 17, c), [fx, fy] = limb(kx, ky, a[1], 26, 15, c);
+    if (ch.pads) { ctx.fillStyle = ch.pads; ctx.beginPath(); ctx.arc(kx, ky, 9, 0, 7); ctx.fill(); }
+    ctx.fillStyle = ch.boots; ctx.beginPath(); ctx.ellipse(fx + 5, fy + 1, 12, 6.5, 0, 0, 7); ctx.fill();
+  };
+  const arm = (a, c, fist) => {
+    const [ex, ey] = limb(sx, sy, a[0], 26, 13, c), [hx, hy] = limb(ex, ey, a[1], 24, 11, c);
+    if (fist) { ctx.fillStyle = ch.gloves || sk; ctx.beginPath(); ctx.arc(hx, hy, 7, 0, 7); ctx.fill(); }
+  };
+  leg(B, ch.pants ? ch.pantsD : dk); arm(AB, dk, false);                       // far leg + far arm
+  limb(0, hip, -90 + lean, 44, 32, ch.top || sk);                              // torso (shirt/vest colour if any)
+  ctx.fillStyle = ch.top || sk; ctx.beginPath(); ctx.arc(sx, sy, 12, 0, 7); ctx.fill();   // shoulders
+  if (ch.pants) limb(0, hip, -90 + lean, 6, 34, ch.belt); else limb(0, hip + 6, -90 + lean, 16, 35, team);   // belt or trunks
+  leg(F, ch.pants || sk);                                                      // near leg
+  limb(sx, sy, ta / DEG, 9, 11, sk);                                           // neck
+  const hx = sx + Math.cos(ta) * 20, hy = sy + Math.sin(ta) * 20;
+  if (ch.hair === 'long') { ctx.fillStyle = ch.hairc; ctx.fillRect(hx - 19, hy - 4, 15, 30); }
+  ctx.fillStyle = ch.mask ? ch.mask : sk; ctx.beginPath(); ctx.ellipse(hx, hy, 12, 14, 0, 0, 7); ctx.fill();
+  if (ch.mask) { ctx.fillStyle = sk; ctx.beginPath(); ctx.arc(hx + 4, hy + 7, 5, 0, 7); ctx.fill(); }
+  if (ch.hair === 'short' || ch.hair === 'long') { ctx.fillStyle = ch.hairc; ctx.beginPath(); ctx.ellipse(hx - 1, hy - 4, 12.5, 10, 0, Math.PI, 2 * Math.PI); ctx.fill(); }
+  if (ch.beard) { ctx.fillStyle = ch.beard; ctx.beginPath(); ctx.arc(hx + 2, hy + 3, 10.5, .15, Math.PI - .15); ctx.fill(); }
+  ctx.fillStyle = ch.mask ? '#f3efe6' : '#fff'; ctx.fillRect(hx + 4, hy - 3, 5, 3); ctx.fillStyle = '#111'; ctx.fillRect(hx + 7, hy - 3, 2, 3);   // eye
+  arm(AF, sk, true);                                                           // near arm + fist
   ctx.restore();
 }
 
@@ -529,7 +497,7 @@ $('btnExit').addEventListener('click', leaveRoom);
 $('btnRematch').addEventListener('click', () => {
   if (rematchSent || !code) return; rematchSent = true;
   $('btnRematch').disabled = true; $('btnRematch').textContent = 'Waiting for opponent…';
-  set(R('rematch/' + n), true).catch(() => {});
+  send({ t: 'rm' }); tryRematch();
 });
 // Wrestler picker
 const chEl = $('chars');
@@ -544,7 +512,7 @@ document.querySelectorAll('#pad button').forEach(b => {
   b.addEventListener('contextmenu', e => e.preventDefault());
 });
 window.addEventListener('blur', () => Object.keys(keys).forEach(k => keys[k] = false));   // no stuck keys after alt-tab
-window.addEventListener('beforeunload', () => { if (db && code) remove(R('presence/' + n)); });
+window.addEventListener('beforeunload', closeNet);
 </script>
 </body>
 </html>
