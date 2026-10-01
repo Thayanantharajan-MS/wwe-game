@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring Clash Online</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
+<!--
+=====================  FIREBASE SETUP (read me)  =====================
+1. https://console.firebase.google.com -> Add project.
+2. Build > Authentication > Sign-in method > enable "Anonymous".
+3. Build > Realtime Database > Create database (any region, test mode to start).
+4. Project settings > Your apps > Web app (</>) > copy the config object and paste it
+   over the YOUR_FIREBASE_CONFIG block in the script below (include databaseURL!).
+5. Suggested Realtime Database rules (signed-in users only):
+   { "rules": { "rooms": { ".read": "auth != null", ".write": "auth != null" } } }
+6. Serve this file over http(s) (e.g. `npx serve`, Firebase Hosting) and open it in two
+   browser windows/devices. Player 1 creates a room, Player 2 joins with the 6-digit code.
+=======================================================================
+-->
+<style>
+:root{--bg:#07070c;--panel:#12121c;--gold:#f2b705;--red:#e0143c;--blue:#1e6bff;--text:#f3efe6}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:radial-gradient(circle at 50% 0,#1c1020,var(--bg) 60%);color:var(--text);font-family:'Barlow Condensed',Impact,sans-serif;overflow:hidden}
+h1,h2,.big{font-family:'Bebas Neue',Impact,sans-serif;letter-spacing:.04em;font-weight:400}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:20px;text-align:center}
+.screen.on{display:flex}
+h1{font-size:clamp(56px,12vw,128px);line-height:.9;color:var(--gold);text-shadow:4px 4px 0 var(--red),0 0 40px rgba(224,20,60,.45);transform:skew(-6deg)}
+.sub{color:#b9b3c4;font-size:20px;max-width:440px}
+.card{background:var(--panel);border:2px solid #2a2a3c;border-left:6px solid var(--gold);padding:22px;display:flex;flex-direction:column;gap:12px;width:min(380px,100%)}
+button,input{font:700 22px 'Barlow Condensed',sans-serif;padding:12px 18px;border:0;color:var(--text)}
+button{cursor:pointer;background:var(--red);transition:transform .08s,filter .15s;text-transform:none}
+button:hover{filter:brightness(1.2)}button:active{transform:scale(.97)}
+button.alt{background:var(--blue)}button:disabled{opacity:.5;cursor:wait}
+button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+input{background:#05050a;border:2px solid #34344a;text-align:center;letter-spacing:.35em;font-size:28px}
+#msg{min-height:26px;color:#ff8aa0;font-size:19px}
+#code{font-size:clamp(64px,14vw,120px);color:var(--gold);letter-spacing:.12em}
+#game{background:#000}
+#wrap{position:absolute;inset:0;display:none;align-items:center;justify-content:center}
+#wrap.on{display:flex}
+canvas{width:100%;max-width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;display:block;border:2px solid #2a2a3c}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(5,5,10,.82)}
+#over.on{display:flex}
+#over h2{font-size:clamp(48px,10vw,110px);color:var(--gold);text-shadow:3px 3px 0 var(--red)}
+#help{position:absolute;bottom:6px;left:0;right:0;text-align:center;font-size:15px;color:#8d879a;pointer-events:none}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<!-- SCREEN 1: MENU -->
+<section id="menu" class="screen on">
+  <h1>RING CLASH</h1>
+  <p class="sub">Two wrestlers. One ring. Create a room and send the code to a friend.</p>
+  <div class="card">
+    <button id="btnCreate">Create room</button>
+    <input id="inCode" inputmode="numeric" maxlength="6" placeholder="000000" aria-label="Room code">
+    <button id="btnJoin" class="alt">Join room</button>
+  </div>
+  <div id="msg" role="status"></div>
+</section>
+
+<!-- SCREEN 2: LOBBY -->
+<section id="lobby" class="screen">
+  <h2 class="big" style="font-size:36px">Room code</h2>
+  <div id="code" class="big">------</div>
+  <p class="sub" id="lobbyTxt">Waiting for Player 2 to join…</p>
+  <button id="btnLeave" class="alt">Leave room</button>
+</section>
+
+<!-- SCREEN 3: GAME -->
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="over">
+    <h2 id="overTxt">YOU WIN</h2>
+    <button id="btnRematch">Rematch</button>
+    <button id="btnExit" class="alt">Leave room</button>
+  </div>
+  <div id="help">Move A/D or ←/→ · Jump W/↑ · Block S/↓ · Light J/Space · Heavy K · Finisher L (at 100%)</div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getDatabase, ref, set, get, update, remove, onValue, onDisconnect, runTransaction }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+/* ============ 1. FIREBASE CONFIG — replace with YOUR_FIREBASE_CONFIG ============ */
+const firebaseConfig = {
+ apiKey: "AIzaSyAi3XkbwiGa4A3LWuAu0_hdVqFiuibrpLI",
+  authDomain: "wwe-game-b0796.firebaseapp.com",
+  projectId: "wwe-game-b0796",
+  storageBucket: "wwe-game-b0796.firebasestorage.app",
+  messagingSenderId: "1083326357000",
+  appId: "1:1083326357000:web:a6f9de3b92d8ea2f7c7bbd",
+  measurementId: "G-1D3E4SBTDZ"
+};
+let db, auth;
+
+/* ============ 2. DOM HELPERS ============ */
+const $ = id => document.getElementById(id);
+const show = id => { ['menu','lobby'].forEach(s => $(s).classList.toggle('on', s === id)); $('wrap').classList.toggle('on', id === 'game'); };
+const setMsg = t => $('msg').textContent = t || '';
+
+/* ============ 3. SESSION STATE ============ */
+let code = null, n = 0, opn = 0;          // room code, my slot (1=host/red, 2=guest/blue), opponent slot
+let unsubs = [], sendTimer = null, raf = 0, started = false, lastHitId = null, lastT = 0;
+
+/* ============ 4. GAME DATA ============ */
+const W = 960, H = 540, GROUND = 450, LEFT = 140, RIGHT = 820, GRAV = 1800;
+const ATK = {
+  light:   { dur:.28, s:.08, e:.18, reach:58,  dmg:5,  kb:170, names:['JAB!','KICK!','CLOTHESLINE!'] },
+  heavy:   { dur:.55, s:.22, e:.32, reach:76,  dmg:11, kb:330, names:['SUPLEX!','POWERBOMB!','DDT!'] },
+  special: { dur:1.0, s:.40, e:.50, reach:105, dmg:30, kb:560, names:['RKO!','ROCK BOTTOM!','CHOKESLAM!'] }
+};
+const COLORS = { 1:'#e0143c', 2:'#1e6bff' };
+const keys = {};
+let me = null, opp = null, ann = { text:'', t:0 }, shake = 0, timeLeft = 99, over = false, rematchSent = false;
+
+const newFighter = slot => ({ x: slot === 1 ? 300 : 660, y: GROUND, vx:0, vy:0, face: slot === 1 ? 1 : -1,
+  state:'idle', t:0, hp:100, meter:0, hitDone:false, pin:0, pinT:0, mash:0, stunDur:.3 });
+const newOpp = slot => ({ x: slot === 1 ? 300 : 660, y: GROUND, face: slot === 1 ? 1 : -1, state:'idle', t:0,
+  hp:100, meter:0, pin:0, tx: slot === 1 ? 300 : 660, ty: GROUND });
+
+const announce = (text, t = 1.4) => { ann = { text, t }; };
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const hurtH = f => f.state === 'block' ? 70 : (f.state === 'down' ? 30 : 104);
+
+/* ============ 5. ROOM MANAGEMENT ============ */
+async function boot() {
+  if (db) return true;
+  if (firebaseConfig.apiKey === "YOUR_FIREBASE_CONFIG") { setMsg('Add your Firebase config first (see comments at top of file).'); return false; }
+  try {
+    const app = initializeApp(firebaseConfig);
+    auth = getAuth(app); db = getDatabase(app);
+    await signInAnonymously(auth);
+    return true;
+  } catch (e) { setMsg('Firebase error: ' + e.message); db = null; return false; }
+}
+const R = p => ref(db, `rooms/${code}${p ? '/' + p : ''}`);
+
+async function createRoom() {
+  setMsg(''); $('btnCreate').disabled = true;
+  try {
+    if (!await boot()) return;
+    for (let i = 0; i < 5; i++) {                       // retry on the rare code collision
+      const c = String(Math.floor(100000 + Math.random() * 900000));
+      const snap = await get(ref(db, `rooms/${c}`));
+      if (snap.exists()) continue;
+      code = c; n = 1; opn = 2;
+      await set(R(), { host: auth.currentUser.uid, round: 0, status: 'waiting', created: Date.now() });
+      onDisconnect(R()).remove();                       // host vanishes while waiting -> room deleted
+      enterRoom(); return;
+    }
+    setMsg('Could not create a room. Try again.');
+  } catch (e) { setMsg('Error: ' + e.message); }
+  finally { $('btnCreate').disabled = false; }
+}
+
+async function joinRoom() {
+  const c = $('inCode').value.trim();
+  if (!/^\d{6}$/.test(c)) return setMsg('Enter a 6-digit room code.');
+  setMsg(''); $('btnJoin').disabled = true;
+  try {
+    if (!await boot()) return;
+    const snap = await get(ref(db, `rooms/${c}`));
+    if (!snap.exists()) return setMsg('Room not found.');
+    // Transaction guarantees only ONE guest can take the seat even if two people race.
+    const res = await runTransaction(ref(db, `rooms/${c}/guest`), cur => cur === null ? auth.currentUser.uid : undefined);
+    if (!res.committed) return setMsg('Room is already full.');
+    code = c; n = 2; opn = 1;
+    enterRoom();
+  } catch (e) { setMsg('Error: ' + e.message); }
+  finally { $('btnJoin').disabled = false; }
+}
+
+function enterRoom() {
+  started = false; lastHitId = null; over = false; rematchSent = false;
+  $('code').textContent = code; $('lobbyTxt').textContent = n === 1 ? 'Waiting for Player 2 to join…' : 'Joined! Waiting for host…';
+  show('lobby');
+  me = newFighter(n); opp = newOpp(opn);
+  const pres = R('presence/' + n);
+  set(pres, true); onDisconnect(pres).remove();
+
+  // Presence: start when both are in; detect the other player leaving.
+  unsubs.push(onValue(R('presence'), s => {
+    const v = s.val() || [];                            // object keyed by slot
+    const both = v[1] && v[2];
+    if (both && n === 1 && !started) {                  // host kicks off round 1
+      onDisconnect(R()).cancel();
+      update(R(), { status: 'playing', round: 1, winner: null });
+    }
+    if (started && !v[opn]) opponentLeft();
+  }));
+  // Round counter: every new value (re)starts a fight, used for rematches too.
+  unsubs.push(onValue(R('round'), s => { if (s.val() >= 1) startFight(); }));
+  unsubs.push(onValue(R('winner'), s => { if (s.exists() && s.val() !== null && !over) endGame(s.val()); }));
+  unsubs.push(onValue(R('hit/' + n), s => { const h = s.val(); if (h && h.id !== lastHitId) { lastHitId = h.id; applyHit(h); } }));
+  unsubs.push(onValue(R('p/' + opn), s => receiveOpp(s.val())));
+  if (n === 1) unsubs.push(onValue(R('rematch'), s => {   // host resets once both players agree
+    const v = s.val(); if (v && v[1] && v[2]) get(R('round')).then(r => update(R(), { winner: null, rematch: null, round: (r.val() || 1) + 1 }));
+  }));
+}
+
+function opponentLeft() {
+  if (!started) return; started = false;
+  over = true; $('over').classList.add('on'); $('overTxt').textContent = 'OPPONENT LEFT';
+  $('btnRematch').style.display = 'none';
+  remove(R()).catch(() => {});                          // clean up room state
+}
+
+function leaveRoom() {
+  unsubs.forEach(u => u()); unsubs = [];
+  clearInterval(sendTimer); cancelAnimationFrame(raf); sendTimer = null; raf = 0;
+  window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp);
+  if (db && code) {
+    onDisconnect(R('presence/' + n)).cancel();
+    // Waiting host or last player out deletes the room; otherwise just drop my seat.
+    (started || n === 2 ? remove(R('presence/' + n)) : remove(R())).catch(() => {});
+    if (!started && n === 2) update(R(), { guest: null }).catch(() => {});
+  }
+  code = null; started = false; over = false;
+  $('over').classList.remove('on'); $('btnRematch').style.display = '';
+  show('menu');
+}
+
+/* ============ 6. FIGHT LIFECYCLE ============ */
+function startFight() {
+  if (!code) return;
+  me = newFighter(n); opp = newOpp(opn);
+  timeLeft = 99; over = false; rematchSent = false; started = true;
+  $('over').classList.remove('on'); $('btnRematch').disabled = false; $('btnRematch').textContent = 'Rematch';
+  announce('FIGHT!', 1.6); show('game');
+  window.addEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); window.addEventListener('keyup', onKeyUp);
+  clearInterval(sendTimer); sendTimer = setInterval(sendState, 33);   // ~30 Hz network tick
+  lastT = performance.now(); cancelAnimationFrame(raf); raf = requestAnimationFrame(loop);
+}
+
+function sendState() {
+  if (!code || !started) return;
+  update(R('p/' + n), { x: Math.round(me.x), y: Math.round(me.y), f: me.face, a: me.state, hp: me.hp, m: Math.round(me.meter), pin: me.pin })
+    .catch(() => {});
+}
+
+function receiveOpp(v) {
+  if (!v || !opp) return;
+  opp.tx = v.x; opp.ty = v.y; opp.face = v.f; opp.hp = v.hp; opp.meter = v.m;
+  if (v.a !== opp.state) { opp.state = v.a; opp.t = 0; }
+  if (v.pin !== opp.pin) { opp.pin = v.pin; if (v.pin > 0) announce(`PIN COUNT: ${[...Array(v.pin)].map((_, i) => i + 1).join('... ')}...`, 1.1); }
+}
+
+function endGame(w) {
+  over = true;
+  $('overTxt').textContent = w === 0 ? 'DRAW' : (w === n ? 'YOU WIN!' : 'YOU LOSE');
+  $('over').classList.add('on');
+}
+const declareWinner = w => { if (!over) update(R(), { winner: w, status: 'over' }); };
+
+/* ============ 7. INPUT ============ */
+const BLOCKED = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'];
+function onKeyDown(e) {
+  if (BLOCKED.includes(e.code)) e.preventDefault();
+  keys[e.code] = true; if (e.repeat || !started || over) return;
+  if (me.state === 'down') { if (e.code === 'Space') me.mash++; return; }   // pin kick-out mashing
+  if (e.code === 'KeyJ' || e.code === 'Space') tryAttack('light');
+  else if (e.code === 'KeyK') tryAttack('heavy');
+  else if (e.code === 'KeyL') tryAttack('special');
+}
+function onKeyUp(e) { keys[e.code] = false; }
+const held = (...c) => c.some(k => keys[k]);
+
+function tryAttack(type) {
+  if (!['idle','walk','jump','block'].includes(me.state)) return;
+  if (type === 'special') { if (me.meter < 100) return announce('FINISHER NOT READY', .8); me.meter = 0; shake = .25; }
+  me.state = type; me.t = 0; me.hitDone = false; me.vx = 0;
+}
+
+/* ============ 8. COMBAT ============ */
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;   // AABB
+
+function checkHit(def) {
+  const hb = { x: me.face > 0 ? me.x + 20 : me.x - 20 - def.reach, y: me.y - 95, w: def.reach, h: 65 };
+  const h = hurtH(opp);
+  if (opp.state === 'down') return;
+  if (!overlap(hb, { x: opp.x - 24, y: opp.y - h, w: 48, h })) return;
+  me.hitDone = true;
+  const name = pick(def.names);
+  me.meter = Math.min(100, me.meter + def.dmg * 2);
+  announce(name, 1);
+  set(R('hit/' + opn), { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), dmg: def.dmg, kb: def.kb * me.face, fin: me.state === 'special', name })
+    .catch(() => {});
+}
+
+// Victim-authoritative: each client owns its own HP, so the two clients never disagree.
+function applyHit(h) {
+  if (!started || over || me.state === 'down') return;
+  const blocked = me.state === 'block';
+  const dmg = Math.max(1, Math.round(h.dmg * (blocked ? (h.fin ? .4 : .2) : 1)));
+  me.hp = Math.max(0, me.hp - dmg);
+  me.meter = Math.min(100, me.meter + dmg);
+  me.vx = h.kb * (blocked ? .3 : 1);
+  if (!blocked) { me.state = 'hurt'; me.t = 0; me.stunDur = h.fin ? .7 : .3; me.vy = h.fin ? -300 : 0; }
+  if (h.fin) shake = .5; else shake = Math.max(shake, .1);
+  announce(blocked ? 'BLOCKED!' : h.name, 1);
+  if (me.hp <= 0) { me.state = 'down'; me.pin = 0; me.pinT = 0; me.mash = 0; me.vx = 0; announce('PIN ATTEMPT!', 1.2); }
+}
+
+function updatePin(dt) {
+  me.pinT += dt;
+  const c = Math.min(3, Math.floor(me.pinT));
+  if (c !== me.pin) { me.pin = c; if (c > 0) announce(`PIN COUNT: ${[...Array(c)].map((_, i) => i + 1).join('... ')}...`, 1.1); }
+  if (me.mash >= 10) {                                    // kicked out!
+    me.hp = 20; me.state = 'idle'; me.pin = 0; me.pinT = 0; me.mash = 0; me.t = 0;
+    announce('KICK OUT!', 1.5); sendState(); return;
+  }
+  if (c >= 3) { sendState(); declareWinner(opn); }        // 3-count: opponent wins
+}
+
+/* ============ 9. UPDATE LOOP ============ */
+function step(dt) {
+  if (!over) { timeLeft = Math.max(0, timeLeft - dt); }
+  if (timeLeft <= 0 && n === 1 && !over) declareWinner(me.hp === opp.hp ? 0 : (me.hp > opp.hp ? 1 : 2));  // host decides on time-out
+
+  const free = ['idle','walk','jump','block'].includes(me.state);
+  const grounded = me.y >= GROUND;
+  me.t += dt;
+  if (me.state === 'down') { if (!over) updatePin(dt); }
+  else if (ATK[me.state]) {
+    const d = ATK[me.state];
+    if (me.t >= d.dur) { me.state = 'idle'; }
+    else if (!me.hitDone && me.t >= d.s && me.t <= d.e) checkHit(d);
+  } else if (me.state === 'hurt' && me.t >= me.stunDur) me.state = 'idle';
+
+  if (free && !over) {
+    const dir = (held('KeyD','ArrowRight') ? 1 : 0) - (held('KeyA','ArrowLeft') ? 1 : 0);
+    if (held('KeyS','ArrowDown') && grounded) { me.state = 'block'; me.vx = 0; }
+    else {
+      me.vx = dir * 260;
+      if (held('KeyW','ArrowUp') && grounded) {            // near a turnbuckle you clamber higher
+        const corner = me.x < LEFT + 40 || me.x > RIGHT - 40;
+        me.vy = corner ? -950 : -700; if (corner) announce('TOP ROPE!', .8);
+      }
+      me.state = !grounded ? 'jump' : (dir ? 'walk' : 'idle');
+    }
+  }
+  if (me.state === 'hurt' || me.state === 'down') me.vx *= .9;
+  if (!ATK[me.state] || !grounded) { /* attacks plant the feet on the ground */ }
+  else me.vx *= .8;
+
+  me.vy += GRAV * dt; me.y += me.vy * dt;
+  if (me.y >= GROUND) { me.y = GROUND; me.vy = 0; }
+  me.x = Math.max(LEFT, Math.min(RIGHT, me.x + me.vx * dt));
+  if (Math.abs(opp.x - me.x) < 36 && Math.abs(opp.y - me.y) < 60 && me.state !== 'down')   // soft body-collision
+    me.x += (me.x < opp.x ? -1 : 1) * 160 * dt;
+  if (!ATK[me.state] && me.state !== 'hurt') me.face = opp.x >= me.x ? 1 : -1;
+
+  // Interpolate opponent toward last network sample (smooths 30 Hz updates).
+  opp.t += dt;
+  const k = 1 - Math.pow(.0005, dt);
+  opp.x += (opp.tx - opp.x) * k; opp.y += (opp.ty - opp.y) * k;
+  if (ann.t > 0) ann.t -= dt;
+  if (shake > 0) shake -= dt;
+}
+
+/* ============ 10. RENDERING ============ */
+const cv = $('game'), ctx = cv.getContext('2d');
+const crowd = Array.from({ length: 260 }, (_, i) => ({ x: (i * 37) % W, y: 70 + Math.floor(i / 26) * 14 + (i % 3) * 3, c: ['#2b2036','#3a2a22','#22303a','#40222c'][i % 4], p: Math.random() * 6 }));
+
+function render(time) {
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - .5) * 16 * shake * 2, (Math.random() - .5) * 16 * shake * 2);
+  // arena backdrop + crowd
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#0b0a14'); g.addColorStop(1, '#1b1020');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  crowd.forEach(c => { ctx.fillStyle = c.c; ctx.beginPath(); ctx.arc(c.x, c.y + Math.sin(time / 300 + c.p) * 3, 8, 0, 7); ctx.fill(); });
+  [[200, '#e0143c'], [760, '#1e6bff']].forEach(([x, col]) => {   // spotlights
+    const s = ctx.createRadialGradient(x, 0, 5, x, 300, 330); s.addColorStop(0, col + '66'); s.addColorStop(1, '#0000');
+    ctx.fillStyle = s; ctx.fillRect(0, 0, W, H);
+  });
+  // ring apron + mat
+  ctx.fillStyle = '#16111c'; ctx.fillRect(0, GROUND + 52, W, H);
+  ctx.fillStyle = '#8f0f2a'; ctx.fillRect(LEFT - 40, GROUND + 52, RIGHT - LEFT + 80, 24);
+  const mg = ctx.createLinearGradient(0, GROUND, 0, GROUND + 52); mg.addColorStop(0, '#d9d2c3'); mg.addColorStop(1, '#a89f8c');
+  ctx.fillStyle = mg; ctx.fillRect(LEFT - 40, GROUND, RIGHT - LEFT + 80, 52);
+  // posts + ropes + turnbuckle pads
+  [LEFT - 40, RIGHT + 40].forEach(px => { ctx.fillStyle = '#2a2a38'; ctx.fillRect(px - 6, 190, 12, 270); });
+  ['#e0143c', '#f3efe6', '#1e6bff'].forEach((c, i) => {
+    const y = 250 + i * 55; ctx.strokeStyle = c; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(LEFT - 40, y); ctx.lineTo(RIGHT + 40, y); ctx.stroke();
+    ctx.fillStyle = '#f2b705'; ctx.fillRect(LEFT - 50, y - 8, 20, 16); ctx.fillRect(RIGHT + 30, y - 8, 20, 16);
+  });
+  if (me && opp) { drawFighter(n === 1 ? me : opp, 1); drawFighter(n === 1 ? opp : me, 2); }
+  ctx.restore();
+  drawHUD();
+}
+
+function drawFighter(f, slot) {
+  const col = COLORS[slot], d = ATK[f.state], h = f.state === 'block' ? 70 : 104;
+  ctx.save(); ctx.translate(f.x, f.y); ctx.scale(f.face, 1);
+  ctx.fillStyle = '#0006'; ctx.beginPath(); ctx.ellipse(0, 2, 30, 7, 0, 0, 7); ctx.fill();
+  if (f.state === 'down') {                               // lying flat
+    ctx.rotate(-Math.PI / 2 * .95); ctx.translate(0, -20);
+  }
+  const hurt = f.state === 'hurt', lean = hurt ? -8 : 0, walk = f.state === 'walk' ? Math.sin(performance.now() / 90) * 8 : 0;
+  ctx.fillStyle = '#d8a37a'; ctx.fillRect(-9 + lean, -h, 18, 12);                 // head
+  ctx.beginPath(); ctx.arc(lean, -h - 8, 12, 0, 7); ctx.fill();
+  ctx.fillStyle = col; ctx.fillRect(-18 + lean, -h + 12, 36, h * .42);            // torso
+  ctx.fillStyle = '#111'; ctx.fillRect(-18, -h * .42, 36, h * .22);               // trunks
+  ctx.fillStyle = '#d8a37a'; ctx.fillRect(-14 + walk, -h * .22, 11, h * .22); ctx.fillRect(3 - walk, -h * .22, 11, h * .22); // legs
+  ctx.fillStyle = '#f2b705'; ctx.fillRect(-18, -h * .24 - 2, 36, 4);              // belt
+  let reach = f.state === 'block' ? 10 : 16;
+  if (d) { const p = Math.min(1, (f.t || 0) / d.dur); reach = 16 + d.reach * Math.sin(p * Math.PI); }
+  ctx.fillStyle = '#d8a37a'; ctx.fillRect(8 + lean, -h + 24, reach, 11);          // striking arm
+  if (f.state === 'block') ctx.fillRect(4, -h + 12, 10, 34);
+  ctx.restore();
+}
+
+function bar(x, y, w, hgt, v, col, right) {
+  ctx.fillStyle = '#000a'; ctx.fillRect(x - 3, y - 3, w + 6, hgt + 6);
+  ctx.fillStyle = col; const bw = w * Math.max(0, v) / 100; ctx.fillRect(right ? x + w - bw : x, y, bw, hgt);
+}
+function drawHUD() {
+  const p1 = n === 1 ? me : opp, p2 = n === 1 ? opp : me;
+  if (!p1 || !p2) return;
+  bar(30, 22, 360, 24, p1.hp, '#e0143c', false); bar(570, 22, 360, 24, p2.hp, '#1e6bff', true);
+  bar(30, 54, 220, 8, p1.meter, p1.meter >= 100 ? '#f2b705' : '#a8851a', false); bar(710, 54, 220, 8, p2.meter, p2.meter >= 100 ? '#f2b705' : '#a8851a', true);
+  ctx.font = '26px "Bebas Neue",Impact,sans-serif'; ctx.fillStyle = '#f3efe6';
+  ctx.textAlign = 'left'; ctx.fillText('RED' + (n === 1 ? ' (YOU)' : ''), 30, 92);
+  ctx.textAlign = 'right'; ctx.fillText('BLUE' + (n === 2 ? ' (YOU)' : ''), 930, 92);
+  ctx.textAlign = 'center'; ctx.font = '44px "Bebas Neue",Impact,sans-serif'; ctx.fillStyle = '#f2b705';
+  ctx.fillText(String(Math.ceil(timeLeft)).padStart(2, '0'), W / 2, 52);
+  if (me.meter >= 100 && !over) { ctx.font = '22px "Bebas Neue",Impact,sans-serif'; ctx.fillText('FINISHER READY — PRESS L', W / 2, 82); }
+  if (me.state === 'down' && !over) {                      // mash prompt
+    ctx.font = '48px "Bebas Neue",Impact,sans-serif'; ctx.fillStyle = '#fff';
+    ctx.fillText(`MASH SPACE! ${me.mash}/10`, W / 2, 200);
+  }
+  if (ann.t > 0) {
+    ctx.globalAlpha = Math.min(1, ann.t * 2); ctx.font = '84px "Bebas Neue",Impact,sans-serif';
+    ctx.lineWidth = 8; ctx.strokeStyle = '#e0143c'; ctx.strokeText(ann.text, W / 2, 330);
+    ctx.fillStyle = '#f2b705'; ctx.fillText(ann.text, W / 2, 330); ctx.globalAlpha = 1;
+  }
+}
+
+function loop(now) {
+  const dt = Math.min(.05, (now - lastT) / 1000); lastT = now;
+  if (started && me) { step(dt); render(now); }
+  raf = requestAnimationFrame(loop);
+}
+
+/* ============ 11. UI WIRING ============ */
+$('btnCreate').addEventListener('click', createRoom);
+$('btnJoin').addEventListener('click', joinRoom);
+$('inCode').addEventListener('input', e => e.target.value = e.target.value.replace(/\D/g, ''));
+$('inCode').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
+$('btnLeave').addEventListener('click', leaveRoom);
+$('btnExit').addEventListener('click', leaveRoom);
+$('btnRematch').addEventListener('click', () => {
+  if (rematchSent || !code) return; rematchSent = true;
+  $('btnRematch').disabled = true; $('btnRematch').textContent = 'Waiting for opponent…';
+  set(R('rematch/' + n), true).catch(() => {});
+});
+window.addEventListener('beforeunload', () => { if (db && code) remove(R('presence/' + n)); });
+</script>
+</body>
+</html>
